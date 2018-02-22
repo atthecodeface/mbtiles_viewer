@@ -1,0 +1,55 @@
+shader_code["standard_vertex"] = """
+#version 330 core
+layout(location = 0) in vec3 V_m;
+layout(location = 1) in vec2 V_UV;
+layout(location = 2) in vec3 N_m;
+out vec2 UV;
+out vec3 V_w;
+out vec3 V_c;
+uniform mat4 M;
+uniform mat4 V;
+uniform mat4 P;
+void main(){
+    V_w = (M * vec4(V_m,1)).xyz + 0*N_m;// Use N_m or lose it...
+    V_c = (V * M * vec4(V_m,1)).xyz;
+    gl_Position =  P * V * M * vec4(V_m,1);
+    UV = V_UV;
+}
+"""
+shader_code["standard_fragment"] = """
+#version 330 core
+in vec3 V_m;
+in vec2 V_UV;
+in vec3 N_m;
+out vec4 color;
+uniform vec3 C;
+void main(){
+    color = vec4(C,1);
+}
+"""
+shader_code["texture_fragment"] = """
+#version 330 core
+in vec3 V_w;
+in vec2 UV;
+in vec3 V_c;
+out vec3 color;
+uniform sampler2D sampler;
+void main(){
+    float brightness;
+    brightness = 1.0;// / (1.0-(V_c.z/5));
+    color = texture(sampler,UV).rgb*brightness;
+}
+"""
+shader_code["font_fragment"] = """
+#version 330 core
+in vec3 V_w;
+in vec2 UV;
+in vec3 V_c;
+out vec4 color;
+uniform sampler2D sampler;
+uniform vec3 C;
+void main(){
+    color = texture(sampler,UV).r * vec4(C,1.0);
+    if (texture(sampler,UV).r<0.1) discard;
+}
+"""

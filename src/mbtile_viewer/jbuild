@@ -1,0 +1,17 @@
+(jbuild_version 1)
+
+(executable (
+  (name mbtile_viewer)
+  (libraries (
+    sdl_ogl_gui
+    ogl_gui
+    mbtiles    
+    batteries
+  ))
+))
+
+(alias (
+  (name    run_top)
+  (deps    (mbtile_viewer.exe))
+  (action  (run ${<}))
+))
