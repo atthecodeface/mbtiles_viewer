@@ -2,8 +2,8 @@ all: mbtiles
 
 .PHONY:mbtiles
 mbtiles:
-	jbuilder build src/mbtile_viewer/mbtile_viewer.exe
-	_build/default/src/mbtile_viewer/mbtile_viewer.exe
+	jbuilder build src/mbtiles_viewer/mbtiles_viewer.exe
+	_build/default/src/mbtiles_viewer/mbtiles_viewer.exe
 
 .PHONY:clean
 clean:
