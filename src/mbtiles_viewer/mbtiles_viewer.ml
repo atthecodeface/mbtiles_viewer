@@ -77,6 +77,16 @@ let gl_with_int f i = ba_int32_1.{0} <- Int32.of_int i; f ba_int32_1
 
 (*c ogl_obj_tile_layer *)
 let light = ba_floats [| (0.5); (0.5); (0.71)|]
+let debug_n = Array.make 20 0
+let debug_filter l f t = true
+(*
+  debug_n.(t) <- debug_n.(t) + 1;
+  (debug_n.(t) mod 600) = 251
+ *)
+
+(*  (debug_n.(t) mod 200) = 51*)
+  (*Layer.feature_kv_map_default l f (fun v->(Value.as_int v)!=(-9)) false "house_number"*)
+
 class ogl_obj_tile_layer tile layer color =
     object (self)
       inherit Ogl_gui.Obj.ogl_obj as super
@@ -115,7 +125,9 @@ class ogl_obj_tile_layer tile layer color =
         vertex_data_glids <- (acc_bound_vbos 0 vabs []);
         Ok () 
       method create_geometry ~offset =
+        let feature_filter f n = debug_filter layer f n in
         let feature_analyze_geometry acc feature =
+          if not (feature_filter feature 0) then acc else
           let geometry = Layer.feature_geometry layer feature in
           match Geometry.geom_type geometry with
           | Point -> (
@@ -129,8 +141,20 @@ class ogl_obj_tile_layer tile layer color =
             (num_vnc+4,num_is+4)
           )
           | Polygon (* Concave in some sense, but might still go in one strip *)
-          | MultiPolygon
- 
+          | MultiPolygon -> (
+            let (num_vnc,num_is)=acc in
+            let coords = Geometry.coords geometry in
+            let num_pts = (Bigarray.Array1.dim coords)/2 in
+            let mesh = Mesh.Mesh.create coords 0 num_pts in
+            let build_okay = Mesh.Mesh.build mesh (1) in
+            if (build_okay) then (
+              let strip = Mesh.Mesh.make_triangle_strip mesh in
+              let strip_length = List.length strip in
+              (num_vnc+num_pts,num_is+strip_length)
+            ) else (
+              acc
+            )
+          )
           | ConvexPolygon  -> (
             let (num_vnc,num_is)=acc in
             let coords = Geometry.coords geometry in
@@ -140,6 +164,7 @@ class ogl_obj_tile_layer tile layer color =
           | _ -> acc
         in
         let feature_build_geometry acc feature =
+          if not (feature_filter feature 1) then acc else
           let geometry = Layer.feature_geometry layer feature in
           let set_pt_2d ba_vncs x y n =
             ba_vncs.{9*n+0} <- (2.*.x)-.1.;
@@ -187,8 +212,29 @@ class ogl_obj_tile_layer tile layer color =
             (ba_vncs,ba_is,num_vnc+4,num_is+4,pts,new_strips)
           )
           | Polygon (* Concave in some sense, but might still go in one strip *)
-          | MultiPolygon
-
+          | MultiPolygon -> (
+            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
+            let coords = Geometry.coords geometry in
+            let num_pts = (Bigarray.Array1.dim coords)/2 in
+            let mesh = Mesh.Mesh.create coords 0 num_pts in
+            let build_okay = Mesh.Mesh.build mesh (1) in
+            if (build_okay) then (
+              let strip = Mesh.Mesh.make_triangle_strip mesh in
+              let strip_length = List.length strip in
+              for i=0 to (num_pts-1) do
+                let x = coords.{2*i+0} in
+                let y = coords.{2*i+1} in
+                let n = i+num_vnc in
+                Printf.printf "coord %d %f %f\n" n (x*.4096.) (y *. 4096.);
+                set_pt_2d ba_vncs x y n;
+              done;
+              List.iteri (fun i n -> Printf.printf "strip index %d\n" (n+num_vnc);ba_is.{i+num_is} <- n+num_vnc) strip;
+              let new_strips = (num_is,strip_length)::strips in
+              (ba_vncs,ba_is,num_vnc+num_pts,num_is+strip_length,pts,new_strips)
+            ) else (
+              acc
+            )
+          )
           | ConvexPolygon  -> (
             let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
             let coords = Geometry.coords geometry in
