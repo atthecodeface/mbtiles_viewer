@@ -76,7 +76,7 @@ let gl_int_val  f   = f ba_int32_1 ; Int32.to_int ba_int32_1.{0}
 let gl_with_int f i = ba_int32_1.{0} <- Int32.of_int i; f ba_int32_1
 
 let light = ba_floats [| (0.5); (0.5); (0.71)|]
-class ogl_obj_tile_layer tile layer =
+class ogl_obj_tile_layer tile layer color =
     object (self)
       inherit Ogl_gui.Obj.ogl_obj as super
     val mutable plot_pts = [];
@@ -123,7 +123,14 @@ class ogl_obj_tile_layer tile layer =
             let num_pts = (Bigarray.Array1.dim coords)/2 in
             (num_vnc+num_pts,num_is+num_pts)
           )
-          | Polygon -> (
+          | Rectangle -> (
+            let (num_vnc,num_is)=acc in
+            (num_vnc+4,num_is+4)
+          )
+          | Polygon (* Concave in some sense, but might still go in one strip *)
+          | MultiPolygon
+ 
+          | ConvexPolygon  -> (
             let (num_vnc,num_is)=acc in
             let coords = Geometry.coords geometry in
             let num_pts = (Bigarray.Array1.dim coords)/2 in
@@ -133,6 +140,17 @@ class ogl_obj_tile_layer tile layer =
         in
         let feature_build_geometry acc feature =
           let geometry = Layer.feature_geometry layer feature in
+          let set_pt_2d ba_vncs x y n =
+            ba_vncs.{9*n+0} <- (2.*.x)-.1.;
+            ba_vncs.{9*n+1} <- 0.;
+            ba_vncs.{9*n+2} <- 1.-.(2.*.y);
+            ba_vncs.{9*n+3} <- 0.;
+            ba_vncs.{9*n+4} <- 1.;
+            ba_vncs.{9*n+5} <- 0.;
+            ba_vncs.{9*n+6} <- color.(0);
+            ba_vncs.{9*n+7} <- color.(1);
+            ba_vncs.{9*n+8} <- color.(2)
+          in
           match Geometry.geom_type geometry with
           | Point -> (
             let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
@@ -141,22 +159,37 @@ class ogl_obj_tile_layer tile layer =
             for i=0 to (num_pts-1) do
                 let x = coords.{2*i+0} in
                 let y = coords.{2*i+1} in
-                let n = i+num_vnc in
-                ba_vncs.{9*n+0} <- x;
-                ba_vncs.{9*n+1} <- 0.;
-                ba_vncs.{9*n+2} <- y;
-                ba_vncs.{9*n+3} <- 0.;
-                ba_vncs.{9*n+4} <- 1.;
-                ba_vncs.{9*n+5} <- 0.;
-                ba_vncs.{9*n+6} <- 1.;
-                ba_vncs.{9*n+7} <- 0.2;
-                ba_vncs.{9*n+8} <- 0.2;
-                ba_is.{i+num_is} <- i+num_is;
+                set_pt_2d ba_vncs x y (i+num_vnc);
+                ba_is.{i+num_is} <- i+num_vnc;
             done;
             let new_pts = (num_is,num_pts)::pts in
             (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,new_pts,strips)
           )
-          | Polygon -> (
+          | Rectangle -> ( (* rectangle is x,y, dx0,dy0, dx1,dy1 *)
+            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
+            let coords = Geometry.coords geometry in
+            let x   = coords.{0} in
+            let y   = coords.{1} in
+            let dx0 = coords.{2} in
+            let dy0 = coords.{3} in
+            let dx1 = coords.{4} in
+            let dy1 = coords.{5} in
+            set_pt_2d ba_vncs x y (num_vnc+0);
+            set_pt_2d ba_vncs (x+.dx0) (y+.dy0) (num_vnc+1);
+            set_pt_2d ba_vncs (x+.dx1) (y+.dy1) (num_vnc+2);
+            set_pt_2d ba_vncs (x+.dx0+.dx1) (y+.dy0+.dy1) (num_vnc+3);
+            ba_is.{num_is+0} <- num_is;
+            ba_is.{num_is+1} <- num_is+1;
+            ba_is.{num_is+2} <- num_is+2;
+            ba_is.{num_is+3} <- num_is+3;
+            Printf.printf "Adding rectangle %d,%d\n" num_is;
+            let new_strips = (num_is,4)::strips in
+            (ba_vncs,ba_is,num_vnc+4,num_is+4,pts,new_strips)
+          )
+          | Polygon (* Concave in some sense, but might still go in one strip *)
+          | MultiPolygon
+
+          | ConvexPolygon  -> (
             let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
             let coords = Geometry.coords geometry in
             let num_pts = (Bigarray.Array1.dim coords)/2 in
@@ -164,23 +197,14 @@ class ogl_obj_tile_layer tile layer =
                 let x = coords.{2*i+0} in
                 let y = coords.{2*i+1} in
                 let n = i+num_vnc in
-                ba_vncs.{9*n+0} <- x;
-                ba_vncs.{9*n+1} <- 0.;
-                ba_vncs.{9*n+2} <- y;
-                ba_vncs.{9*n+3} <- 0.;
-                ba_vncs.{9*n+4} <- 1.;
-                ba_vncs.{9*n+5} <- 0.;
-                ba_vncs.{9*n+6} <- 0.2;
-                ba_vncs.{9*n+7} <- 0.2;
-                ba_vncs.{9*n+8} <- 1.;
+                set_pt_2d ba_vncs x y n;
             done;
             for i=0 to (num_pts-1) do
                 let strip_i = 
                   if ((i land 1)!=0) then (num_pts-1-(i/2)) else (i/2)
                 in
-                ba_is.{i+num_is} <- strip_i+num_is;
+                ba_is.{i+num_is} <- strip_i+num_vnc;
             done;
-            Printf.printf "Adding strip %d,%d\n" num_is num_pts;
             let new_strips = (num_is,num_pts)::strips in
             (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,pts,new_strips)
           )
@@ -189,11 +213,11 @@ class ogl_obj_tile_layer tile layer =
         let (num_vncs,num_is) = Tile.feature_fold layer feature_analyze_geometry (0,0) in
         let ba_vncs       = ba_float_array (9*num_vncs) in
         let axis_indices  = ba_uint16_array (num_is) in
-        Printf.printf "Num pts %d\n" num_vncs;
+        Printf.printf "Num vertices %d num indices %d\n" num_vncs num_is;
         let (_,_,_,_,pts,strips) = Tile.feature_fold layer feature_build_geometry (ba_vncs,axis_indices,0,0,[],[]) in
         plot_pts <- pts;
         plot_strips <- strips;
-        Printf.printf "Got %d pts %d strips\n" (List.length plot_pts) (List.length plot_strips);
+        Printf.printf "Got %d points to plot and %d strips to plot\n" (List.length plot_pts) (List.length plot_strips);
         self # create_vao_2 [ ( [ (0,3,Gl.float,false,(3*3*4),0);     (* vertices *)
                                   (1,3,Gl.float,false,(3*3*4),(3*4)); (* normals *)
                                   (2,3,Gl.float,false,(3*3*4),(3*4+3*4)); (* colors *)
@@ -268,13 +292,14 @@ class ogl_app_mbtile_viewer stylesheet ogl_displays : Ogl_gui.Types.t_ogl_app =
 end
     
 (*f obj_of_layers *)
-let obj_of_layers tile layer_names =
-  let acc_layer acc layer_name =
+let obj_of_layers tile layer_names_colors =
+  let acc_layer acc layer_name_color =
+    let layer_name, color = layer_name_color in
     match (Tile.get_layer tile layer_name) with
-    | Some layer -> (((new ogl_obj_tile_layer tile layer):>Ogl_gui.Obj.ogl_obj)::acc)
+    | Some layer -> (((new ogl_obj_tile_layer tile layer color):>Ogl_gui.Obj.ogl_obj)::acc)
     | _ -> acc
   in
-  List.fold_left acc_layer [] layer_names
+  List.fold_left acc_layer [] layer_names_colors
 
 (*f xml_additions *)
 let xml_additions tile = 
@@ -297,7 +322,7 @@ let xml_additions tile =
                        0.0; 1.0; 0.0;
                        0.0; 0.0; 1.0;|];] (* 'colors' *)
       in
-      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile ["place";"water"] in
+      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",[|0.2;0.2;0.8;|]); ("building",[|0.6;0.6;0.6;|])] in
 (*      let objs = ((new ogl_obj_data) :> Ogl_gui.Obj.ogl_obj) ::[] in (* :: objs in*)*)
       let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs in
       let widget = new ogl_widget_mbtile_viewer app.Ogl_gui.App.Builder.stylesheet name_values in
@@ -311,7 +336,7 @@ let xml_additions tile =
 let (map, tile) =
   let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in
   File.read_all_tiles map;
-  let t = Option.get (File.get_tile_opt map 9 256 344) in (* 6 32 43 *)
+  let t = Option.get (File.get_tile_opt map  14 8170 (8*1376) ) in (*11 1025 1376   6 32 43;9 256 344 *)
   let pbf = File.get_tile_pbf map t in
   let tile = Tile.create () in
   Tile.parse_pbf tile pbf;
