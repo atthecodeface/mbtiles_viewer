@@ -75,6 +75,7 @@ let ba_int32s len = Bigarray.(Array1.create int32 c_layout len)
 let gl_int_val  f   = f ba_int32_1 ; Int32.to_int ba_int32_1.{0}
 let gl_with_int f i = ba_int32_1.{0} <- Int32.of_int i; f ba_int32_1
 
+(*c ogl_obj_tile_layer *)
 let light = ba_floats [| (0.5); (0.5); (0.71)|]
 class ogl_obj_tile_layer tile layer color =
     object (self)
@@ -182,7 +183,6 @@ class ogl_obj_tile_layer tile layer color =
             ba_is.{num_is+1} <- num_is+1;
             ba_is.{num_is+2} <- num_is+2;
             ba_is.{num_is+3} <- num_is+3;
-            Printf.printf "Adding rectangle %d,%d\n" num_is;
             let new_strips = (num_is,4)::strips in
             (ba_vncs,ba_is,num_vnc+4,num_is+4,pts,new_strips)
           )
@@ -333,6 +333,8 @@ let xml_additions tile =
 ]
 
 (*a Top level *)
+let _ = Mesh.test_mesh ()
+
 let (map, tile) =
   let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in
   File.read_all_tiles map;
