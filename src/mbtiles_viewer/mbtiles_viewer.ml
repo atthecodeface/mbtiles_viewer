@@ -84,12 +84,13 @@ let debug_filter l f t = true || (
 (*  (debug_n.(t) mod 200) = 51*)
   (*Layer.feature_kv_map_default l f (fun v->(Value.as_int v)!=(-9)) false "house_number"*)
 
-class ogl_obj_tile_layer tile layer color =
+class ogl_obj_tile_layer tile layer height color =
     object (self)
       inherit Ogl_gui.Obj.ogl_obj as super
     val mutable plot_pts = [];
     val mutable plot_strips = [];
     val mutable angle=0.;
+    val vnc_mult = if height=0. then 1 else 2;
       method create_geometry ~offset =
         let feature_filter f n = debug_filter layer f n in
         let feature_analyze_geometry acc feature =
@@ -101,10 +102,6 @@ class ogl_obj_tile_layer tile layer color =
             let coords = Geometry.coords geometry in
             let num_pts = (Bigarray.Array1.dim coords)/2 in
             (num_vnc+num_pts,num_is+num_pts)
-          )
-          | Rectangle -> (
-            let (num_vnc,num_is)=acc in
-            (num_vnc+4,num_is+4)
           )
           | Polygon (* Concave in some sense, but might still go in one strip *)
           | MultiPolygon -> (
@@ -126,7 +123,7 @@ class ogl_obj_tile_layer tile layer color =
             let (num_vnc,num_is)=acc in
             let coords = Geometry.coords geometry in
             let num_pts = (Bigarray.Array1.dim coords)/2 in
-            (num_vnc+num_pts,num_is+num_pts+1)
+            if (height!=0.) then (num_vnc+2*num_pts,num_is+3*num_pts+2) else (num_vnc+num_pts,num_is+num_pts)
           )
           | _ -> acc
         in
@@ -136,6 +133,17 @@ class ogl_obj_tile_layer tile layer color =
           let set_pt_2d ba_vncs x y n =
             ba_vncs.{9*n+0} <- (2.*.x)-.1.;
             ba_vncs.{9*n+1} <- 0.;
+            ba_vncs.{9*n+2} <- 1.-.(2.*.y);
+            ba_vncs.{9*n+3} <- 0.;
+            ba_vncs.{9*n+4} <- 1.;
+            ba_vncs.{9*n+5} <- 0.;
+            ba_vncs.{9*n+6} <- color.(0);
+            ba_vncs.{9*n+7} <- color.(1);
+            ba_vncs.{9*n+8} <- color.(2)
+          in
+          let set_pt_2dh ba_vncs x y n =
+            ba_vncs.{9*n+0} <- (2.*.x)-.1.;
+            ba_vncs.{9*n+1} <- height*.0.01;
             ba_vncs.{9*n+2} <- 1.-.(2.*.y);
             ba_vncs.{9*n+3} <- 0.;
             ba_vncs.{9*n+4} <- 1.;
@@ -157,26 +165,6 @@ class ogl_obj_tile_layer tile layer color =
             done;
             let new_pts = (num_is,num_pts)::pts in
             (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,new_pts,strips)
-          )
-          | Rectangle -> ( (* rectangle is x,y, dx0,dy0, dx1,dy1 *)
-            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
-            let coords = Geometry.coords geometry in
-            let x   = coords.{0} in
-            let y   = coords.{1} in
-            let dx0 = coords.{2} in
-            let dy0 = coords.{3} in
-            let dx1 = coords.{4} in
-            let dy1 = coords.{5} in
-            set_pt_2d ba_vncs x y (num_vnc+0);
-            set_pt_2d ba_vncs (x+.dx0) (y+.dy0) (num_vnc+1);
-            set_pt_2d ba_vncs (x+.dx1) (y+.dy1) (num_vnc+2);
-            set_pt_2d ba_vncs (x+.dx0+.dx1) (y+.dy0+.dy1) (num_vnc+3);
-            ba_is.{num_is+0} <- num_vnc;
-            ba_is.{num_is+1} <- num_vnc+1;
-            ba_is.{num_is+2} <- num_vnc+2;
-            ba_is.{num_is+3} <- num_vnc+3;
-            let new_strips = (num_is,4)::strips in
-            (ba_vncs,ba_is,num_vnc+4,num_is+4,pts,new_strips)
           )
           | Polygon (* Concave in some sense, but might still go in one strip *)
           | MultiPolygon -> (
@@ -219,8 +207,23 @@ class ogl_obj_tile_layer tile layer color =
                 in
                 ba_is.{i+num_is} <- strip_i+num_vnc;
             done;
-            let new_strips = (num_is,num_pts)::strips in
-            (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,pts,new_strips)
+            if (height!=0.) then (
+              for i=0 to (num_pts-1) do
+                let x = coords.{2*i+0} in
+                let y = coords.{2*i+1} in
+                let n = i+num_vnc+num_pts in
+                set_pt_2dh ba_vncs x y n;
+              done;
+              for i=0 to (num_pts-1) do
+                ba_is.{num_is+num_pts+2*i+0} <- num_vnc+i;
+                ba_is.{num_is+num_pts+2*i+1} <- num_vnc+num_pts+i;
+              done;
+              ba_is.{num_is+3*num_pts+0} <- num_vnc;
+              ba_is.{num_is+3*num_pts+1} <- num_vnc+num_pts;
+              (ba_vncs,ba_is,num_vnc+num_pts*2,num_is+3*num_pts+2,pts,((num_is,3*num_pts+2)::strips))
+            ) else (
+              (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,pts,((num_is,num_pts)::strips))
+            )
           )
           | _ -> acc
         in
@@ -269,13 +272,58 @@ let app_xml = "<?xml?><app>
 </app>"
 
 (*c ogl_widget_mbtile_viewer  - viewer widget *)
+module Ordint = struct type t=int let compare a b = Pervasives.compare a b end
+module Intset=Set.Make(Ordint)
+let v_nz = Atcflib.Vector.make3 0. 0. (-1.)
 class ogl_widget_mbtile_viewer stylesheet name_values =
   object (self)
     inherit Ogl_gui.Widget.ogl_widget_viewer stylesheet name_values as super
+    val location = Array.make 3 0.;    
+
     (*f mouse - handle a mouse action along the action vector *)
     method create app =
       opt_material <- Some (app#get_material "vnc_vertex") ;
       super#create app
+
+    (*f draw_content *)
+    method draw_content view_set transformation =
+      if (Option.is_none opt_material) then () else
+      begin    
+      let x = Atcflib.Vector.(assign v_nz center |> apply_q (self # get_direction)) in
+      Printf.printf "x %s\n" (Atcflib.Vector.str x);
+        let material = (Option.get opt_material) in
+        ignore (Matrix.assign_from_q direction rotation);
+        ignore (Matrix.identity translation);
+        ignore (Matrix.set 0 3 (-. (Atcflib.Vector.get center 0)) translation);
+        ignore (Matrix.set 1 3 (-. (Atcflib.Vector.get center 1)) translation);
+        ignore (Matrix.set 2 3 (-. (Atcflib.Vector.get center 2)) translation);
+        ignore (Matrix.assign_m_m rotation translation view);
+        let ar_scale = (min (super#get_content_draw_dims).(0) (super#get_content_draw_dims).(1)) *. 0.35 *. !scale in
+        ignore (Matrix.(set 1 1 ar_scale (set 0 0 ar_scale (identity tmp))));  (* Make -1/1 fit the width - but do not scale z *)
+        ignore (Matrix.assign_m_m tmp view tmp2);  (* Make -1/1 fit the width - but do not scale z *)
+        let other_uids = Ogl_gui.View.set view_set (Some material) transformation in
+        Gl.uniform_matrix4fv other_uids.(0) 1 true (ba_of_matrix4 tmp2); (* 0 -> V *)
+        Gl.uniform_matrix4fv other_uids.(1) 1 true identity4; (* 1 -> M *)
+        List.iter (fun o -> o#draw view_set other_uids) objs;
+        Gl.bind_vertex_array 0;
+      end
+
+    (*f idle *)
+    method idle _ = 
+      if self # is_key_down ',' then self#move_forward ((-0.01) /. !scale);
+      if self # is_key_down 'l' then self#move_forward (0.01 /. !scale);
+      if self # is_key_down 'q' then self#move_left ((-0.01) /. !scale);
+      if self # is_key_down 'w' then self#move_left (0.01 /. !scale);
+      if self # is_key_down '.' then self#pitch 0.005;
+      if self # is_key_down ';' then self#pitch (-0.005);
+      if self # is_key_down 'x' then self#yaw 0.005;
+      if self # is_key_down 'z' then self#yaw (-0.005);
+      if self # is_key_down 's' then self#roll 0.005;
+      if self # is_key_down 'a' then self#roll (-0.005);
+      if self # is_key_down '\'' then scale := !scale *. 1.05;
+      if self # is_key_down '/' then  scale := !scale /. 1.05;
+      if self # is_key_down '=' then None else
+        (self#request_redraw ; Some 10)
 
     method mouse action mouse vector options = None
 end
@@ -308,9 +356,9 @@ end
 (*f obj_of_layers *)
 let obj_of_layers tile layer_names_colors =
   let acc_layer acc layer_name_color =
-    let layer_name, color = layer_name_color in
+    let layer_name, color, height = layer_name_color in
     match (Tile.get_layer tile layer_name) with
-    | Some layer -> (((new ogl_obj_tile_layer tile layer color):>Ogl_gui.Obj.ogl_obj)::acc)
+    | Some layer -> (((new ogl_obj_tile_layer tile layer height color):>Ogl_gui.Obj.ogl_obj)::acc)
     | _ -> acc
   in
   List.fold_left acc_layer [] layer_names_colors
@@ -352,10 +400,10 @@ let xml_additions tile =
                        0.0; 1.0; 0.0;
                        0.0; 0.0; 1.0;|];] (* 'colors' *)
       in
-      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",[|0.2;0.2;0.8;|]);
-                                                                 ("landcover",[|0.5;0.5;0.3;|]);
-                                                                 ("landuse",[|0.5;0.5;0.3;|]);
-                                                                 ("building",[|0.6;0.6;0.6;|]);
+      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",     [|0.2;0.2;0.8;|], 0. );
+                                                                 ("landcover", [|0.5;0.5;0.3;|], 0. );
+                                                                 ("landuse",   [|0.5;0.5;0.3;|], 0. );
+                                                                 ("building",  [|0.6;0.6;0.6;|], 1. );
                                                ] in
 (*      let objs = ((new ogl_obj_data) :> Ogl_gui.Obj.ogl_obj) ::[] in (* :: objs in*)*)
       let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs @ [(ground :> Ogl_gui.Obj.ogl_obj)]in
