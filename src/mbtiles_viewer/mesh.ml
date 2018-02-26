@@ -265,13 +265,14 @@ module Mesh = struct
       add_triangles (tp2::tp1::tp0::strip) tp1 tp2
     in
     let rec build_strip strip =
-      if t.verbose then Array.iteri (fun i u-> Printf.printf "Use of %d %d\n" i u) use_of_pt;
+      (*if t.verbose then Array.iteri (fun i u-> Printf.printf "Use of %d %d\n" i u) use_of_pt;*)
       let (_,pt,u) = Array.fold_left (fun (i,n,min) u -> if ((min<=0) || ((u>0) && (min>u))) then (i+1,i,u) else (i+1,n,min)) (0,0,0) use_of_pt in
       if u<=0 then strip 
       else build_strip (build_strip_from_point strip pt)
     in
     if t.verbose then display t;
     let strip = List.rev (build_strip []) in
+    if t.verbose then Printf.printf "Strip (%d):" (List.length strip);
     if t.verbose then ( List.iter (fun p->Printf.printf "%d:" p) strip; Printf.printf "\n";);
     strip
 

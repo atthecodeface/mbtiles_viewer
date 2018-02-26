@@ -20,7 +20,6 @@
 open Sdl_ogl_gui
 open Atcflib
 open Tgl4
-open Ogl_gui
 open Mbtiles
 module Option   = Batteries.Option
 module Tile     = Vector.Tile
@@ -31,7 +30,7 @@ module KeyValue = Vector.KeyValue
 module Geometry = Vector.Geometry
 
 (*a Useful functions *)
-let stylesheet = create_stylesheet ()
+let stylesheet = Ogl_gui.create_stylesheet ()
 
 (*f trace - use with trace __POS__ *)
 let trace pos = 
@@ -68,7 +67,6 @@ let play_with_feature tile layer feature =
 
 
 type t_ba_float32s = (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
-type t_vap = int * int * Tgl4.Gl.enum * bool * int *int (* index size type_ normalized stride offset *)
 (*f gl_int_val, gl_with_int - to feed ints and get ints back from ctypes Opengl *)
 let ba_int32_1    = Bigarray.(Array1.create int32 c_layout 1)
 let ba_int32s len = Bigarray.(Array1.create int32 c_layout len)
@@ -78,11 +76,10 @@ let gl_with_int f i = ba_int32_1.{0} <- Int32.of_int i; f ba_int32_1
 (*c ogl_obj_tile_layer *)
 let light = ba_floats [| (0.5); (0.5); (0.71)|]
 let debug_n = Array.make 20 0
-let debug_filter l f t = true
-(*
+let debug_filter l f t = true || (
   debug_n.(t) <- debug_n.(t) + 1;
-  (debug_n.(t) mod 600) = 251
- *)
+  (debug_n.(t) mod 4) = 0
+                       )
 
 (*  (debug_n.(t) mod 200) = 51*)
   (*Layer.feature_kv_map_default l f (fun v->(Value.as_int v)!=(-9)) false "house_number"*)
@@ -93,37 +90,6 @@ class ogl_obj_tile_layer tile layer color =
     val mutable plot_pts = [];
     val mutable plot_strips = [];
     val mutable angle=0.;
-      (*m create_vao_2 *)
-      method create_vao_2 (vabs: ((t_vap list) * Utils.float32_bigarray) list) : unit Utils.ogl_result =
-
-        (* Create and bind vao *)
-        vao_glid <- gl_int_val (Gl.gen_vertex_arrays 1);
-        Gl.bind_vertex_array vao_glid;
-
-        (* Create vbos for each big_array element *)
-        let num_attributes = List.length vabs in
-        let vbo_glids      = ba_int32s num_attributes in
-        Gl.gen_buffers num_attributes vbo_glids;
-
-        (* Bind each VBO to its big_array element and attrib pointers *)
-        let rec acc_bound_vbos buf_i vab acc =
-          match vab with
-          | [] -> acc
-          | (vaps, ba)::vab_tl -> (
-            let glid = Int32.to_int (vbo_glids.{buf_i}) in
-            let size = Gl.bigarray_byte_size ba in
-            Gl.bind_buffer Gl.array_buffer glid;
-            Gl.buffer_data Gl.array_buffer size (Some ba) Gl.static_draw;
-            let bind_vap (index,size,type_,normalized,stride,offset) =
-              Gl.enable_vertex_attrib_array index;
-              Gl.vertex_attrib_pointer index size type_ normalized stride (`Offset offset);
-            in                                                                              
-            List.iter bind_vap vaps;
-            acc_bound_vbos (buf_i+1) vab_tl (glid::acc)
-          )
-        in 
-        vertex_data_glids <- (acc_bound_vbos 0 vabs []);
-        Ok () 
       method create_geometry ~offset =
         let feature_filter f n = debug_filter layer f n in
         let feature_analyze_geometry acc feature =
@@ -144,7 +110,8 @@ class ogl_obj_tile_layer tile layer color =
           | MultiPolygon -> (
             let (num_vnc,num_is)=acc in
             let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
+            let steps  = Geometry.steps  geometry in
+            let num_pts = 1+((steps.(1) land 0xff0) lsr 4) in (* must be moveto n *)
             let mesh = Mesh.Mesh.create coords 0 num_pts in
             let build_okay = Mesh.Mesh.build mesh (1) in
             if (build_okay) then (
@@ -204,10 +171,10 @@ class ogl_obj_tile_layer tile layer color =
             set_pt_2d ba_vncs (x+.dx0) (y+.dy0) (num_vnc+1);
             set_pt_2d ba_vncs (x+.dx1) (y+.dy1) (num_vnc+2);
             set_pt_2d ba_vncs (x+.dx0+.dx1) (y+.dy0+.dy1) (num_vnc+3);
-            ba_is.{num_is+0} <- num_is;
-            ba_is.{num_is+1} <- num_is+1;
-            ba_is.{num_is+2} <- num_is+2;
-            ba_is.{num_is+3} <- num_is+3;
+            ba_is.{num_is+0} <- num_vnc;
+            ba_is.{num_is+1} <- num_vnc+1;
+            ba_is.{num_is+2} <- num_vnc+2;
+            ba_is.{num_is+3} <- num_vnc+3;
             let new_strips = (num_is,4)::strips in
             (ba_vncs,ba_is,num_vnc+4,num_is+4,pts,new_strips)
           )
@@ -215,7 +182,8 @@ class ogl_obj_tile_layer tile layer color =
           | MultiPolygon -> (
             let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
             let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
+            let steps  = Geometry.steps  geometry in
+            let num_pts = 1+((steps.(1) land 0xff0) lsr 4) in (* must be moveto n *)
             let mesh = Mesh.Mesh.create coords 0 num_pts in
             let build_okay = Mesh.Mesh.build mesh (1) in
             if (build_okay) then (
@@ -225,10 +193,10 @@ class ogl_obj_tile_layer tile layer color =
                 let x = coords.{2*i+0} in
                 let y = coords.{2*i+1} in
                 let n = i+num_vnc in
-                Printf.printf "coord %d %f %f\n" n (x*.4096.) (y *. 4096.);
+                (*Printf.printf "coord %d %f %f\n" n (x*.4096.) (y *. 4096.);*)
                 set_pt_2d ba_vncs x y n;
               done;
-              List.iteri (fun i n -> Printf.printf "strip index %d\n" (n+num_vnc);ba_is.{i+num_is} <- n+num_vnc) strip;
+              List.iteri (fun i n -> ba_is.{i+num_is} <- n+num_vnc) strip;
               let new_strips = (num_is,strip_length)::strips in
               (ba_vncs,ba_is,num_vnc+num_pts,num_is+strip_length,pts,new_strips)
             ) else (
@@ -264,7 +232,7 @@ class ogl_obj_tile_layer tile layer color =
         plot_pts <- pts;
         plot_strips <- strips;
         Printf.printf "Got %d points to plot and %d strips to plot\n" (List.length plot_pts) (List.length plot_strips);
-        self # create_vao_2 [ ( [ (0,3,Gl.float,false,(3*3*4),0);     (* vertices *)
+        self # create_vao [ ( [ (0,3,Gl.float,false,(3*3*4),0);     (* vertices *)
                                   (1,3,Gl.float,false,(3*3*4),(3*4)); (* normals *)
                                   (2,3,Gl.float,false,(3*3*4),(3*4+3*4)); (* colors *)
                                 ],ba_vncs)
@@ -352,6 +320,22 @@ let xml_additions tile =
 [
 ("mbtile", fun app _ name_values ->
     (
+      let ground = new Ogl_gui.Obj.ogl_obj_geometry
+                     Gl.triangle_strip 4 
+                     [| 0; 1; 3; 2; |] (* indices *)
+                     [ ba_floats [| -1.; 0.; -1.;
+                        1.; 0.; -1.;
+                        1.; 0.; 1.;
+                        -1.; 0.; 1.;|]; (* vertices *)
+                     ba_floats [| 0.; 1.; 0.;
+                        0.; 1.; 0.;
+                        0.; 1.; 0.;
+                        0.; 1.; 0.;|]; (* normals *)
+                     ba_floats [|0.1; 0.4; 0.1;
+                                 0.1; 0.4; 0.0;
+                                 0.1; 0.5; 0.1;
+                                 0.1; 0.4; 0.2;|];] (* 'colors' *)
+      in
       let axes = new Ogl_gui.Obj.ogl_obj_geometry
                      Gl.lines 6 
                      [| 0; 1; 0; 2; 0; 3; |] (* indices *)
@@ -368,18 +352,22 @@ let xml_additions tile =
                        0.0; 1.0; 0.0;
                        0.0; 0.0; 1.0;|];] (* 'colors' *)
       in
-      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",[|0.2;0.2;0.8;|]); ("building",[|0.6;0.6;0.6;|])] in
+      let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",[|0.2;0.2;0.8;|]);
+                                                                 ("landcover",[|0.5;0.5;0.3;|]);
+                                                                 ("landuse",[|0.5;0.5;0.3;|]);
+                                                                 ("building",[|0.6;0.6;0.6;|]);
+                                               ] in
 (*      let objs = ((new ogl_obj_data) :> Ogl_gui.Obj.ogl_obj) ::[] in (* :: objs in*)*)
-      let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs in
-      let widget = new ogl_widget_mbtile_viewer app.Ogl_gui.App.Builder.stylesheet name_values in
+      let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs @ [(ground :> Ogl_gui.Obj.ogl_obj)]in
+      let widget = new ogl_widget_mbtile_viewer app.Ogl_gui.AppBuilder.stylesheet name_values in
       widget#set_objs objs;
       widget#name_value_args name_values;
-      Ogl_gui.App.Builder.add_child app (widget :> Ogl_gui.Types.t_ogl_widget)
+      Ogl_gui.AppBuilder.add_child app (widget :> Ogl_gui.Types.t_ogl_widget)
     ))
 ]
 
 (*a Top level *)
-let _ = Mesh.test_mesh ()
+(*let _ = Mesh.test_mesh ()*)
 
 let (map, tile) =
   let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in
@@ -400,7 +388,7 @@ let main () =
   Arg.parse (Arg.align options) anon usage;
 
   let app_creator displays = (new ogl_app_mbtile_viewer stylesheet displays) in
-  match (Ogl_gui.App.Builder.create_app_from_xml app_xml stylesheet (xml_additions tile) app_creator) with
+  match (Ogl_gui.AppBuilder.create_app_from_xml app_xml stylesheet (xml_additions tile) app_creator) with
     None -> 
     (
       Printf.printf "Failed to create app\n"; exit 1
