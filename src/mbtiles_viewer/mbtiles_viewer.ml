@@ -145,9 +145,9 @@ class ogl_obj_tile_layer tile layer height color =
             ba_vncs.{9*n+0} <- (2.*.x)-.1.;
             ba_vncs.{9*n+1} <- height*.0.01;
             ba_vncs.{9*n+2} <- 1.-.(2.*.y);
-            ba_vncs.{9*n+3} <- 0.;
+            ba_vncs.{9*n+3} <- 1.;
             ba_vncs.{9*n+4} <- 1.;
-            ba_vncs.{9*n+5} <- 0.;
+            ba_vncs.{9*n+5} <- 1.;
             ba_vncs.{9*n+6} <- color.(0);
             ba_vncs.{9*n+7} <- color.(1);
             ba_vncs.{9*n+8} <- color.(2)
@@ -275,6 +275,20 @@ let app_xml = "<?xml?><app>
 module Ordint = struct type t=int let compare a b = Pervasives.compare a b end
 module Intset=Set.Make(Ordint)
 let v_nz = Atcflib.Vector.make3 0. 0. (-1.)
+let v_g  = Atcflib.Vector.make3 0. (-1.) 0.
+let qadj = Quaternion.make_rijk 0. 0. 0. 0.001
+let apply_gravity q v_g v_at scale =
+    let v_up_q = Atcflib.Vector.(apply_q q (copy v_g)) in
+    let v_at_q = Atcflib.Vector.(apply_q q (copy v_at)) in
+    let v_up_required = Atcflib.Vector.(normalize (cross_product3 (cross_product3 v_g v_at_q) v_at_q)) in
+    let v_axis = Atcflib.Vector.(cross_product3 v_up_q v_up_required) in
+    let s = (-1.) *. (Atcflib.Vector.modulus v_axis) *. scale in
+    let c = sqrt (1. -. (s*.s)) in (* why not -? *)
+    ignore (Atcflib.Vector.normalize v_axis);
+    ignore (Quaternion.(assign_of_rotation v_axis c s qadj));
+    let l = Quaternion.(modulus (premultiply qadj q)) in
+    ignore (Quaternion.scale (1.0/.l) q);
+    ()
 class ogl_widget_mbtile_viewer stylesheet name_values =
   object (self)
     inherit Ogl_gui.Widget.ogl_widget_viewer stylesheet name_values as super
@@ -283,14 +297,17 @@ class ogl_widget_mbtile_viewer stylesheet name_values =
     (*f mouse - handle a mouse action along the action vector *)
     method create app =
       opt_material <- Some (app#get_material "vnc_vertex") ;
+Atcflib.Vector.set 1 0.01 center;
+    scale := 60.0;
       super#create app
 
     (*f draw_content *)
     method draw_content view_set transformation =
+Atcflib.Vector.set 1 0.008 center;
       if (Option.is_none opt_material) then () else
       begin    
-      let x = Atcflib.Vector.(assign v_nz center |> apply_q (self # get_direction)) in
-      Printf.printf "x %s\n" (Atcflib.Vector.str x);
+      (*let x = Atcflib.Vector.(assign v_nz center |> apply_q (self # get_direction)) in*)
+      (*Printf.printf "x %s\n" (Atcflib.Vector.str x);*)
         let material = (Option.get opt_material) in
         ignore (Matrix.assign_from_q direction rotation);
         ignore (Matrix.identity translation);
@@ -301,17 +318,17 @@ class ogl_widget_mbtile_viewer stylesheet name_values =
         let ar_scale = (min (super#get_content_draw_dims).(0) (super#get_content_draw_dims).(1)) *. 0.35 *. !scale in
         ignore (Matrix.(set 1 1 ar_scale (set 0 0 ar_scale (identity tmp))));  (* Make -1/1 fit the width - but do not scale z *)
         ignore (Matrix.assign_m_m tmp view tmp2);  (* Make -1/1 fit the width - but do not scale z *)
-        let other_uids = Ogl_gui.View.set view_set (Some material) transformation in
-        Gl.uniform_matrix4fv other_uids.(0) 1 true (ba_of_matrix4 tmp2); (* 0 -> V *)
-        Gl.uniform_matrix4fv other_uids.(1) 1 true identity4; (* 1 -> M *)
+        let other_uids = Ogl_gui.View.Ogl_view.set view_set (Some material) transformation in
+        Gl.uniform_matrix4fv other_uids.(0) 1 true (Ogl_gui.Utils.ba_of_matrix4 tmp2); (* 0 -> V *)
+        Gl.uniform_matrix4fv other_uids.(1) 1 true Ogl_gui.Utils.identity4; (* 1 -> M *)
         List.iter (fun o -> o#draw view_set other_uids) objs;
         Gl.bind_vertex_array 0;
       end
 
     (*f idle *)
     method idle _ = 
-      if self # is_key_down ',' then self#move_forward ((-0.01) /. !scale);
-      if self # is_key_down 'l' then self#move_forward (0.01 /. !scale);
+      if self # is_key_down ',' then self#move_forward ((-0.1) /. !scale);
+      if self # is_key_down 'l' then self#move_forward (0.1 /. !scale);
       if self # is_key_down 'q' then self#move_left ((-0.01) /. !scale);
       if self # is_key_down 'w' then self#move_left (0.01 /. !scale);
       if self # is_key_down '.' then self#pitch 0.005;
@@ -322,6 +339,11 @@ class ogl_widget_mbtile_viewer stylesheet name_values =
       if self # is_key_down 'a' then self#roll (-0.005);
       if self # is_key_down '\'' then scale := !scale *. 1.05;
       if self # is_key_down '/' then  scale := !scale /. 1.05;
+      if ((self # is_key_down '\'') || (self # is_key_down '/')) then () else (scale := (7. *. !scale +. 60.)/.8.);
+      if ((self # is_key_down 's') || (self # is_key_down 'a')) then () else (
+        let q = self#get_direction in
+        apply_gravity q v_g v_nz 0.03
+      ) ;
       if self # is_key_down '=' then None else
         (self#request_redraw ; Some 10)
 
