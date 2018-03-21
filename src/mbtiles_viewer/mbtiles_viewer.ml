@@ -46,6 +46,16 @@ let ba_uint16_array  len = Bigarray.(Array1.create int16_unsigned c_layout len)
 let ba_uint16s fs = Bigarray.(Array1.of_array int16_unsigned c_layout fs)
 let ba_floats  fs = Bigarray.(Array1.of_array float32 c_layout fs)
 
+(*f iteri_n *)
+let iteri_n f n = for i=0 to n-1 do f i done
+
+(*f fold_left_i_n *)
+let fold_left_i_n f acc n =
+  let rec loop acc i =
+    if (i>=n) then acc else loop (f acc i) (i+1)
+  in
+  loop acc 0
+
 (*a Mbtile object etc *)
 (*a Top level *)
 let play_with_feature tile layer feature =
@@ -66,7 +76,9 @@ let play_with_feature tile layer feature =
   ()
 
 
-type t_ba_float32s = (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t
+type t_ba_float32s = (float, Bigarray.float32_elt,        Bigarray.c_layout) Bigarray.Array1.t
+type t_ba_uint16s  = (int,   Bigarray.int16_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
 (*f gl_int_val, gl_with_int - to feed ints and get ints back from ctypes Opengl *)
 let ba_int32_1    = Bigarray.(Array1.create int32 c_layout 1)
 let ba_int32s len = Bigarray.(Array1.create int32 c_layout len)
@@ -80,10 +92,253 @@ let debug_filter l f t = true || (
   debug_n.(t) <- debug_n.(t) + 1;
   (debug_n.(t) mod 4) = 0
                        )
-
 (*  (debug_n.(t) mod 200) = 51*)
   (*Layer.feature_kv_map_default l f (fun v->(Value.as_int v)!=(-9)) false "house_number"*)
 
+(*a Ogl_obj arrays *)
+(*m OOVnc_type - vertex/normal/color type with 9 floats per coord *)
+module OOVnc_type =
+struct
+  let fpc = 9 (* 9 floats per coordinate - vertex, normal, color/material coord *)
+end
+
+(*m OOVnc - extendable arrays of coordinates and indices *)
+module OOVnc =
+struct
+  include Obj_arrays.Ogl_obj_arrays(OOVnc_type)
+
+  let normal_in_wall dx0 dy0 dx1 dy1 =
+    let l0 = sqrt (dx0 *. dx0 +. dy0 *. dy0) in
+    let l1 = sqrt (dx1 *. dx1 +. dy1 *. dy1) in
+    let dxS = (dx0 /. l0) +. (dx1 /. l1) in
+    let dyS = (dy0 /. l0) +. (dy1 /. l1) in
+    let l = sqrt (dxS *. dxS +. dyS *. dyS) in
+    if l < 1E-8 then (0., 0.) else (dxS /. l, dyS /. l)
+ 
+  let add_roof_pt t ?height:(height=0.) x y color =
+    let n = t.num_cs in
+    t.num_cs <- t.num_cs + 1;
+    t.cs.{9*n+0} <- 2. *. x -. 1.;
+    t.cs.{9*n+1} <- height;
+    t.cs.{9*n+2} <- 1.0-.2. *. y;
+    t.cs.{9*n+3} <- 0.;
+    t.cs.{9*n+4} <- 1.;
+    t.cs.{9*n+5} <- 0.;
+    t.cs.{9*n+6} <- color.(0);
+    t.cs.{9*n+7} <- color.(1);
+    t.cs.{9*n+8} <- color.(2);
+    n
+
+  let add_wall_pts t x y xn yn height color =
+    let n = t.num_cs in
+    t.num_cs <- t.num_cs + 2;
+    t.cs.{9*n+0} <- 2. *. x -. 1.;
+    t.cs.{9*n+1} <- 0.;
+    t.cs.{9*n+2} <- 1.0 -. 2. *. y;
+    t.cs.{9*n+3} <- xn;
+    t.cs.{9*n+4} <- 0.;
+    t.cs.{9*n+5} <- yn;
+    t.cs.{9*n+6} <- color.(0);
+    t.cs.{9*n+7} <- color.(1);
+    t.cs.{9*n+8} <- color.(2);
+    t.cs.{9*n+9} <- 2. *. x -. 1.;
+    t.cs.{9*n+10} <- height;
+    t.cs.{9*n+11} <- 1.0 -. 2.*.y;
+    t.cs.{9*n+12} <- xn;
+    t.cs.{9*n+13} <- 0.;
+    t.cs.{9*n+14} <- yn;
+    t.cs.{9*n+15} <- color.(0);
+    t.cs.{9*n+16} <- color.(1);
+    t.cs.{9*n+17} <- color.(2);
+    n
+end
+
+(*a Geometry things *)
+(*c geometry_base *)
+class virtual geometry_base oovnc_t color =
+object (self)
+
+  method add_index   i   = OOVnc.add_index   oovnc_t i
+  method add_roof_pt ?height:(height=0.) x y       = OOVnc.add_roof_pt oovnc_t ~height:height x y color
+  method add_wall_pts ?height:(height=0.) x y xn yn = OOVnc.add_wall_pts oovnc_t x y xn yn height color
+  method index           = OOVnc.object_index oovnc_t
+  method coord           = OOVnc.object_coord oovnc_t
+  method add_strip i n   = OOVnc.add_strip   oovnc_t i n
+  method add_points i n  = OOVnc.add_points   oovnc_t i n
+
+  (* 4 points, we add 0 3 1 2
+     5 points, we add 0 4 1 3 2
+    For 3 points we want 0 1 2
+    For 4 points we want 0 1 3 2
+    For 5 points we want 0 1 4 2 3
+
+    This is N-N, 0+1, N-1, 0+2, etc; i.e. +-(i+1)/2
+
+    Now it is 0 1 N-1 2 N-2 ...
+    e.g. N=7 it goes 0 1 6 2 5 3 4
+     *)
+  method build_polygon_strip ?height:(height=0.) (coords:t_ba_float32s) num_pts =
+    let index = self # index in
+    let pt0   = self # coord in
+    iteri_n (fun i-> self # add_roof_pt ~height:height coords.{2*i+0} coords.{2*i+1}) num_pts;
+    iteri_n (fun i ->
+      (*let strip_i = if ((i land 1)!=0) then (num_pts-1-(i/2)) else (i/2) in*)
+      let strip_i = if (i=0) then 0 else if ((i land 1)=0) then (num_pts-(i/2)) else (1+i/2) in
+      self # add_index (pt0+strip_i)) num_pts;
+    self # add_strip index num_pts
+
+  method build_wall (coords:t_ba_float32s) num_pts height =
+    let build_wall_segment i =
+      let next_i = (i+1) mod num_pts in
+      let x0 = coords.{2*i+0} in
+      let y0 = coords.{2*i+1} in
+      let x1 = coords.{2*next_i+0} in
+      let y1 = coords.{2*next_i+1} in
+      let xn = y1 -. y0 in
+      let yn = x0 -. x1 in
+      self # add_wall_pts ~height:height  x0 y0 xn yn; (* Adds two wall points *)
+      self # add_wall_pts ~height:height  x1 y1 xn yn; (* Adds two wall points *)
+      ()
+    in
+    let index = self # index in
+    let pt0   = self # coord in
+    iteri_n build_wall_segment num_pts;
+    iteri_n (fun i -> self # add_index (pt0 + 4*i + 1);
+                      self # add_index (pt0 + 4*i + 3);
+                      self # add_index (pt0 + 4*i + 0);
+                      self # add_index (pt0 + 4*i + 2);
+            ) num_pts;
+    self # add_strip index (num_pts*4)
+
+  method virtual analyze : Feature.t -> Geometry.t -> (int * int )
+  method virtual build   : Feature.t -> Geometry.t -> unit
+end
+
+(*c geometry_point *)
+class geometry_point oovnc_t color =
+object (self)
+  inherit geometry_base oovnc_t color as super
+  val mutable coords = None;
+  val mutable num_pts = 0;
+  method analyze feature geometry =
+    coords  <- Some (Geometry.coords geometry);
+    num_pts <- (Bigarray.Array1.dim (Option.get coords))/2;
+    (num_pts, num_pts)
+  method build feature geometry =
+    let coords = Option.get coords in
+    let index = self # index in
+    iteri_n (fun i-> ignore (self # add_index ( self # add_roof_pt coords.{2*i+0} coords.{2*i+1} ))) num_pts;
+    self # add_points index num_pts
+
+end
+
+(*c geometry_convex_polygon *)
+class geometry_convex_polygon oovnc_t color =
+object (self)
+  inherit geometry_base oovnc_t color as super
+
+  method analyze feature geometry =
+    let coords = Geometry.coords geometry in
+    let num_pts = (Bigarray.Array1.dim coords)/2 in
+    (num_pts,num_pts)
+
+  method build feature geometry  =
+    let coords = Geometry.coords geometry in
+    let num_pts = (Bigarray.Array1.dim coords)/2 in
+    self # build_polygon_strip coords num_pts
+end
+
+(*c geometry_convex_polygon_with_height *)
+class geometry_convex_polygon_with_height oovnc_t color height =
+object (self)
+  inherit geometry_base oovnc_t color as super
+
+  method analyze feature geometry =
+    let coords = Geometry.coords geometry in
+    let num_pts = (Bigarray.Array1.dim coords)/2 in
+    (num_pts*5, (num_pts*4 + num_pts)) (* wall plus roof *)
+
+  method build feature geometry  =
+    let coords = Geometry.coords geometry in
+    let num_pts = (Bigarray.Array1.dim coords)/2 in
+    self # build_polygon_strip ~height:height coords num_pts;
+    self # build_wall coords num_pts height;
+    ()
+end
+
+(*c geometry_polygon *)
+class geometry_polygon oovnc_t color =
+object (self)
+  inherit geometry_base oovnc_t color as super
+
+  val mutable coords = None;
+  val mutable num_pts = 0;
+  val mutable strip = [];
+
+  method analyze feature geometry =
+    coords <- Some (Geometry.coords geometry);
+    let steps  = Geometry.steps  geometry in
+    num_pts <- 1+((steps.(1) land 0xff0) lsr 4); (* must be moveto n *)
+    let mesh = Mesh.Mesh.create (Option.get coords) 0 num_pts in
+    let build_okay = Mesh.Mesh.build mesh (1) in
+    if (build_okay) then (
+      strip <- Mesh.Mesh.make_triangle_strip mesh;
+      (num_pts, List.length strip)
+    ) else (
+      (0, 0)
+    )
+
+  method build feature geometry  =
+    if (strip!=[]) then (
+      let coords = Option.get coords in
+      let strip_length = List.length strip in
+      let index = self # index in
+      let pt0   = self # coord in
+      iteri_n (fun i-> self # add_roof_pt coords.{2*i+0} coords.{2*i+1}) num_pts;
+      List.iter (fun n -> ignore (self # add_index (pt0+n))) strip;
+      self # add_strip index strip_length
+    )
+end
+
+(*c geometry_polygon_with_height *)
+class geometry_polygon_with_height oovnc_t color height =
+object (self)
+  inherit geometry_base oovnc_t color as super
+
+  val mutable coords = None;
+  val mutable num_coords = 0;
+  val mutable num_pts = 0;
+  val mutable strip = [];
+
+  method analyze feature geometry =
+    coords <- Some (Geometry.coords geometry);
+    num_coords <- (Bigarray.Array1.dim (Option.get coords))/2;
+    let steps  = Geometry.steps  geometry in
+    num_pts <- 1+((steps.(1) land 0xff0) lsr 4); (* must be moveto n *)
+    let mesh = Mesh.Mesh.create (Option.get coords) 0 num_pts in
+    let build_okay = Mesh.Mesh.build mesh (1) in
+    if (build_okay) then (
+      strip <- Mesh.Mesh.make_triangle_strip mesh;
+      (num_coords*4 + num_pts, num_coords*4 + (List.length strip))
+    ) else (
+      (num_coords*4, num_coords*4)
+    )
+
+  method build feature geometry  =
+    let coords = Option.get coords in
+    self # build_wall coords num_coords height;
+    if (strip!=[]) then (
+      let strip_length = List.length strip in
+      let index = self # index in
+      let pt0   = self # coord in
+      iteri_n (fun i-> self # add_roof_pt ~height:height coords.{2*i+0} coords.{2*i+1}) num_pts;
+      List.iter (fun n -> ignore (self # add_index (pt0+n))) strip;
+      self # add_strip index strip_length
+    )
+end
+
+
+(*c ogl_obj_tile_layer *)
 class ogl_obj_tile_layer tile layer height color =
     object (self)
       inherit Ogl_gui.Obj.ogl_obj as super
@@ -93,154 +348,36 @@ class ogl_obj_tile_layer tile layer height color =
     val vnc_mult = if height=0. then 1 else 2;
       method create_geometry ~offset =
         let feature_filter f n = debug_filter layer f n in
-        let feature_analyze_geometry acc feature =
+        let oovnc_t = OOVnc.create 1024 1024 10 in
+        let feature_create_geometry acc feature =
           if not (feature_filter feature 0) then acc else
           let geometry = Layer.feature_geometry layer feature in
           match Geometry.geom_type geometry with
-          | Point -> (
-            let (num_vnc,num_is)=acc in
-            let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
-            (num_vnc+num_pts,num_is+num_pts)
-          )
-          | Polygon (* Concave in some sense, but might still go in one strip *)
-          | MultiPolygon -> (
-            let (num_vnc,num_is)=acc in
-            let coords = Geometry.coords geometry in
-            let steps  = Geometry.steps  geometry in
-            let num_pts = 1+((steps.(1) land 0xff0) lsr 4) in (* must be moveto n *)
-            let mesh = Mesh.Mesh.create coords 0 num_pts in
-            let build_okay = Mesh.Mesh.build mesh (1) in
-            if (build_okay) then (
-              let strip = Mesh.Mesh.make_triangle_strip mesh in
-              let strip_length = List.length strip in
-              (num_vnc+num_pts,num_is+strip_length)
-            ) else (
-              acc
-            )
-          )
-          | ConvexPolygon  -> (
-            let (num_vnc,num_is)=acc in
-            let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
-            if (height!=0.) then (num_vnc+2*num_pts,num_is+3*num_pts+2) else (num_vnc+num_pts,num_is+num_pts)
-          )
+          | Point         -> let g = ((new geometry_point oovnc_t color) :> geometry_base)          in (g,feature,geometry)::acc
+          | ConvexPolygon -> (
+            if (height>0.) then (
+              let g = ((new geometry_convex_polygon_with_height oovnc_t color (0.01 *. height)) :> geometry_base) in (g,feature,geometry)::acc
+            ) else  (
+              let g = ((new geometry_convex_polygon oovnc_t color) :> geometry_base) in (g,feature,geometry)::acc
+          ))
+          | Polygon       -> let g = ((new geometry_polygon oovnc_t color) :> geometry_base)        in (g,feature,geometry)::acc
           | _ -> acc
         in
-        let feature_build_geometry acc feature =
-          if not (feature_filter feature 1) then acc else
-          let geometry = Layer.feature_geometry layer feature in
-          let set_pt_2d ba_vncs x y n =
-            ba_vncs.{9*n+0} <- (2.*.x)-.1.;
-            ba_vncs.{9*n+1} <- 0.;
-            ba_vncs.{9*n+2} <- 1.-.(2.*.y);
-            ba_vncs.{9*n+3} <- 0.;
-            ba_vncs.{9*n+4} <- 1.;
-            ba_vncs.{9*n+5} <- 0.;
-            ba_vncs.{9*n+6} <- color.(0);
-            ba_vncs.{9*n+7} <- color.(1);
-            ba_vncs.{9*n+8} <- color.(2)
-          in
-          let set_pt_2dh ba_vncs x y n =
-            ba_vncs.{9*n+0} <- (2.*.x)-.1.;
-            ba_vncs.{9*n+1} <- height*.0.01;
-            ba_vncs.{9*n+2} <- 1.-.(2.*.y);
-            ba_vncs.{9*n+3} <- 1.;
-            ba_vncs.{9*n+4} <- 1.;
-            ba_vncs.{9*n+5} <- 1.;
-            ba_vncs.{9*n+6} <- color.(0);
-            ba_vncs.{9*n+7} <- color.(1);
-            ba_vncs.{9*n+8} <- color.(2)
-          in
-          match Geometry.geom_type geometry with
-          | Point -> (
-            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
-            let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
-            for i=0 to (num_pts-1) do
-                let x = coords.{2*i+0} in
-                let y = coords.{2*i+1} in
-                set_pt_2d ba_vncs x y (i+num_vnc);
-                ba_is.{i+num_is} <- i+num_vnc;
-            done;
-            let new_pts = (num_is,num_pts)::pts in
-            (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,new_pts,strips)
-          )
-          | Polygon (* Concave in some sense, but might still go in one strip *)
-          | MultiPolygon -> (
-            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
-            let coords = Geometry.coords geometry in
-            let steps  = Geometry.steps  geometry in
-            let num_pts = 1+((steps.(1) land 0xff0) lsr 4) in (* must be moveto n *)
-            let mesh = Mesh.Mesh.create coords 0 num_pts in
-            let build_okay = Mesh.Mesh.build mesh (1) in
-            if (build_okay) then (
-              let strip = Mesh.Mesh.make_triangle_strip mesh in
-              let strip_length = List.length strip in
-              for i=0 to (num_pts-1) do
-                let x = coords.{2*i+0} in
-                let y = coords.{2*i+1} in
-                let n = i+num_vnc in
-                (*Printf.printf "coord %d %f %f\n" n (x*.4096.) (y *. 4096.);*)
-                set_pt_2d ba_vncs x y n;
-              done;
-              List.iteri (fun i n -> ba_is.{i+num_is} <- n+num_vnc) strip;
-              let new_strips = (num_is,strip_length)::strips in
-              (ba_vncs,ba_is,num_vnc+num_pts,num_is+strip_length,pts,new_strips)
-            ) else (
-              acc
-            )
-          )
-          | ConvexPolygon  -> (
-            let (ba_vncs,ba_is,num_vnc,num_is,pts,strips)=acc in
-            let coords = Geometry.coords geometry in
-            let num_pts = (Bigarray.Array1.dim coords)/2 in
-            for i=0 to (num_pts-1) do
-                let x = coords.{2*i+0} in
-                let y = coords.{2*i+1} in
-                let n = i+num_vnc in
-                set_pt_2d ba_vncs x y n;
-            done;
-            for i=0 to (num_pts-1) do
-                let strip_i = 
-                  if ((i land 1)!=0) then (num_pts-1-(i/2)) else (i/2)
-                in
-                ba_is.{i+num_is} <- strip_i+num_vnc;
-            done;
-            if (height!=0.) then (
-              for i=0 to (num_pts-1) do
-                let x = coords.{2*i+0} in
-                let y = coords.{2*i+1} in
-                let n = i+num_vnc+num_pts in
-                set_pt_2dh ba_vncs x y n;
-              done;
-              for i=0 to (num_pts-1) do
-                ba_is.{num_is+num_pts+2*i+0} <- num_vnc+i;
-                ba_is.{num_is+num_pts+2*i+1} <- num_vnc+num_pts+i;
-              done;
-              ba_is.{num_is+3*num_pts+0} <- num_vnc;
-              ba_is.{num_is+3*num_pts+1} <- num_vnc+num_pts;
-              (ba_vncs,ba_is,num_vnc+num_pts*2,num_is+3*num_pts+2,pts,((num_is,3*num_pts+2)::strips))
-            ) else (
-              (ba_vncs,ba_is,num_vnc+num_pts,num_is+num_pts,pts,((num_is,num_pts)::strips))
-            )
-          )
-          | _ -> acc
-        in
-        let (num_vncs,num_is) = Tile.feature_fold layer feature_analyze_geometry (0,0) in
-        let ba_vncs       = ba_float_array (9*num_vncs) in
-        let axis_indices  = ba_uint16_array (num_is) in
+        let gfgs = Tile.feature_fold layer feature_create_geometry [] in
+        let (num_vncs, num_is) = List.fold_left (fun (nv,ni) (gc,f,g) -> let (gnv,gni) = (gc # analyze f g) in (nv+gnv, ni+gni)) (0,0) gfgs in
         Printf.printf "Num vertices %d num indices %d\n" num_vncs num_is;
-        let (_,_,_,_,pts,strips) = Tile.feature_fold layer feature_build_geometry (ba_vncs,axis_indices,0,0,[],[]) in
-        plot_pts <- pts;
-        plot_strips <- strips;
+        OOVnc.ensure oovnc_t num_vncs num_is;
+        List.iter (fun (gc,f,g) -> gc # build f g) gfgs;
+        plot_pts <- OOVnc.points oovnc_t;
+        plot_strips <- OOVnc.strips oovnc_t;
+        OOVnc.display oovnc_t;
         Printf.printf "Got %d points to plot and %d strips to plot\n" (List.length plot_pts) (List.length plot_strips);
         self # create_vao [ ( [ (0,3,Gl.float,false,(3*3*4),0);     (* vertices *)
                                   (1,3,Gl.float,false,(3*3*4),(3*4)); (* normals *)
                                   (2,3,Gl.float,false,(3*3*4),(3*4+3*4)); (* colors *)
-                                ],ba_vncs)
+                                ], OOVnc.cs oovnc_t)
           ];
-        self # add_indices_to_vao axis_indices;
+        self # add_indices_to_vao (OOVnc.is oovnc_t);
         Ok ()
       method draw view_set other_uids =
         light.{0} <- 0.7 *. (sin angle);
@@ -248,6 +385,8 @@ class ogl_obj_tile_layer tile layer height color =
         Gl.point_size 4.0;
         Gl.uniform3fv other_uids.(2) 1 light;
         Gl.bind_vertex_array vao_glid;
+        Gl.cull_face Gl.back;
+        (*Gl.enable Gl.cull_face_enum;*)
         List.iter (fun (ofs,num)->Gl.draw_elements Gl.points num Gl.unsigned_short (`Offset (ofs*2))) plot_pts;
         List.iter (fun (ofs,num)->Gl.draw_elements Gl.triangle_strip num Gl.unsigned_short (`Offset (ofs*2))) plot_strips;
         Gl.bind_vertex_array 0;
@@ -339,7 +478,15 @@ Atcflib.Vector.set 1 0.008 center;
       if self # is_key_down 'a' then self#roll (-0.005);
       if self # is_key_down '\'' then scale := !scale *. 1.05;
       if self # is_key_down '/' then  scale := !scale /. 1.05;
-      if ((self # is_key_down '\'') || (self # is_key_down '/')) then () else (scale := (7. *. !scale +. 60.)/.8.);
+      let v = self # joystick_axis_value 1 in
+      if (v!=0) then self # move_forward ((float (-v)) /. 32768.0 /. 120.);
+      let v = self # joystick_axis_value 0 in
+      if (v!=0) then self # move_left ((float (-v)) /. 32768.0 /. 120.);
+      let v = self # joystick_axis_value 2 in
+      if (v!=0) then self # yaw ((float v) /. 32768.0 /. 40.);
+      let v = self # joystick_axis_value 3 in
+      if (v!=0) then self # pitch ((float v) /. 32768.0 /. 40.);
+      if ((self # is_key_down '\'') || (self # is_key_down '/')) then () else (scale := (799. *. !scale +. 10.)/.800.);
       if ((self # is_key_down 's') || (self # is_key_down 'a')) then () else (
         let q = self#get_direction in
         apply_gravity q v_g v_nz 0.03
@@ -391,36 +538,26 @@ let xml_additions tile =
 ("mbtile", fun app _ name_values ->
     (
       let ground = new Ogl_gui.Obj.ogl_obj_geometry
-                     Gl.triangle_strip 4 
+                     Gl.triangle_strip 4
                      [| 0; 1; 3; 2; |] (* indices *)
-                     [ ba_floats [| -1.; 0.; -1.;
-                        1.; 0.; -1.;
-                        1.; 0.; 1.;
-                        -1.; 0.; 1.;|]; (* vertices *)
-                     ba_floats [| 0.; 1.; 0.;
-                        0.; 1.; 0.;
-                        0.; 1.; 0.;
-                        0.; 1.; 0.;|]; (* normals *)
-                     ba_floats [|0.1; 0.4; 0.1;
-                                 0.1; 0.4; 0.0;
-                                 0.1; 0.5; 0.1;
-                                 0.1; 0.4; 0.2;|];] (* 'colors' *)
+                     [ ( [(0,3,Gl.float,false,9*4,0); (1,3,Gl.float,false,9*4,3*4); (2,3,Gl.float,false,9*4,6*4)],
+                         (ba_floats [| (-1.); 0.; (-1.);   0.; 1.; 0.;  0.1; 0.4; 0.1;
+                                        1.; 0.; (-1.);     0.; 1.; 0.;  0.1; 0.4; 0.0;
+                                        1.; 0.;  1.;       0.; 1.; 0.;  0.1; 0.5; 0.1;
+                                       (-1.); 0.;  1.;     0.; 1.; 0.;  0.1; 0.4; 0.2;
+                            |] (* vertices, normals, colors *)
+                     ) ) ]
       in
       let axes = new Ogl_gui.Obj.ogl_obj_geometry
                      Gl.lines 6 
                      [| 0; 1; 0; 2; 0; 3; |] (* indices *)
-                     [ ba_floats [| 0.; 0.; 0.;
-                        1.; 0.; 0.;
-                        0.; 1.; 0.;
-                        0.; 0.; 1.;|]; (* vertices *)
-                     ba_floats [| 1.; 0.; 0.;
-                        1.; 0.; 0.;
-                        0.; 1.; 0.;
-                        0.; 0.; 1.;|]; (* normals *)
-                     ba_floats [|1.0; 1.0; 1.0;
-                       1.0; 0.0; 0.0;
-                       0.0; 1.0; 0.0;
-                       0.0; 0.0; 1.0;|];] (* 'colors' *)
+                     [ ( [(0,3,Gl.float,false,9*4,0); (1,3,Gl.float,false,9*4,3*4); (2,3,Gl.float,false,9*4,6*4)],
+                         (ba_floats [| 0.; 0.; 0.;   1.; 0.; 0.;  1.0; 1.0; 1.0;
+                                       1.; 0.; 0.;   1.; 0.; 0.;  1.0; 0.0; 0.0;
+                                       0.; 1.; 0.;   0.; 1.; 0.;  0.0; 1.0; 0.0;
+                                       0.; 0.; 1.;   0.; 0.; 1.;  0.0; 0.0; 1.0;
+                            |] (* vertices, normals, colors *)
+                     ) ) ]
       in
       let objs : Ogl_gui.Obj.ogl_obj list  = obj_of_layers tile [("water",     [|0.2;0.2;0.8;|], 0. );
                                                                  ("landcover", [|0.5;0.5;0.3;|], 0. );
@@ -428,7 +565,7 @@ let xml_additions tile =
                                                                  ("building",  [|0.6;0.6;0.6;|], 1. );
                                                ] in
 (*      let objs = ((new ogl_obj_data) :> Ogl_gui.Obj.ogl_obj) ::[] in (* :: objs in*)*)
-      let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs @ [(ground :> Ogl_gui.Obj.ogl_obj)]in
+      let objs = (axes :> Ogl_gui.Obj.ogl_obj) :: objs @ [(ground :> Ogl_gui.Obj.ogl_obj)] in
       let widget = new ogl_widget_mbtile_viewer app.Ogl_gui.AppBuilder.stylesheet name_values in
       widget#set_objs objs;
       widget#name_value_args name_values;
@@ -442,7 +579,9 @@ let xml_additions tile =
 let (map, tile) =
   let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in
   File.read_all_tiles map;
-  let t = Option.get (File.get_tile_opt map  14 8170 (8*1376) ) in (*11 1025 1376   6 32 43;9 256 344 *)
+  let t = Option.get (File.get_tile_opt map  14 (2+2*2*2049) (2+2*2*2746)) in (* 14 8198 10986 is the station *)
+  let t = Option.get (File.get_tile_opt map  14 8197 10987) in  (* 14 8197 10987 is the center of town *)
+  let t = Option.get (File.get_tile_opt map  13 (8197/2) (10987/2)) in  (* 14 8197 10987 is the center of town *)
   let pbf = File.get_tile_pbf map t in
   let tile = Tile.create () in
   Tile.parse_pbf tile pbf;

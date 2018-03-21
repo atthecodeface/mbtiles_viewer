@@ -237,13 +237,13 @@ module Mesh = struct
         (p1,p2,last)
       in
       let (p1,p2,last) = use_triangle p in
-      let (next_pt,(tp0,tp1,tp2)) =
+      let (next_pt,(tp0,tp1,tp2),winding) =
         if last then (
-          (p, (p,p1,p2))
+          (p, (p,p1,p2),1)
         ) else (
           let (p1_p1, p1_p2, _) = t.triangles.(p1) in
           if t.verbose then Printf.printf "Matching %d %d with %d %d\n" p1 p2 p1_p1 p1_p2;
-          if ((p1_p1=p2) || (p1_p2=p2)) then (p1,(p,p1,p2)) else (p2,(p,p2,p1))
+          if ((p1_p1=p2) || (p1_p2=p2)) then (p1,(p,p1,p2),1) else (p2,(p,p2,p1),-1)
         )
       in
       let rec add_triangles strip p np =
@@ -260,7 +260,10 @@ module Mesh = struct
           )
         )
       in
+      let l = (List.length strip) land 1 in
       let strip = if (strip=[]) then [] else (tp0::(List.hd strip)::strip) in
+      let need_extra = if (l=0) then winding else (-winding) in
+      let strip = if (need_extra<0) then tp0::strip else strip in
       (* should do another one if we need to fix winding order *)
       add_triangles (tp2::tp1::tp0::strip) tp1 tp2
     in
