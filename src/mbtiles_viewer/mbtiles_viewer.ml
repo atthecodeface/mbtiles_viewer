@@ -419,8 +419,8 @@ let qadj = Quaternion.make_rijk 0. 0. 0. 0.001
 let apply_gravity q v_g v_at scale =
     let v_up_q = Atcflib.Vector.(apply_q q (copy v_g)) in
     let v_at_q = Atcflib.Vector.(apply_q q (copy v_at)) in
-    let v_up_required = Atcflib.Vector.(normalize (cross_product3 (cross_product3 v_g v_at_q) v_at_q)) in
-    let v_axis = Atcflib.Vector.(cross_product3 v_up_q v_up_required) in
+    let v_up_required = Atcflib.Vector.(normalize (assign_cross_product3 (assign_cross_product3 v_g v_at_q (copy v_at)) v_at_q (copy v_at))) in
+    let v_axis = Atcflib.Vector.(assign_cross_product3 v_up_q v_up_required (copy v_at)) in
     let s = (-1.) *. (Atcflib.Vector.modulus v_axis) *. scale in
     let c = sqrt (1. -. (s*.s)) in (* why not -? *)
     ignore (Atcflib.Vector.normalize v_axis);
