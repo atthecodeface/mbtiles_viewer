@@ -105,7 +105,7 @@ end
 (*m OOVnc - extendable arrays of coordinates and indices *)
 module OOVnc =
 struct
-  include Obj_arrays.Ogl_obj_arrays(OOVnc_type)
+  include Ogl_gui.Obj.Arrays(OOVnc_type)
 
   let normal_in_wall dx0 dy0 dx1 dy1 =
     let l0 = sqrt (dx0 *. dx0 +. dy0 *. dy0) in
@@ -419,8 +419,10 @@ let qadj = Quaternion.make_rijk 0. 0. 0. 0.001
 let apply_gravity q v_g v_at scale =
     let v_up_q = Atcflib.Vector.(apply_q q (copy v_g)) in
     let v_at_q = Atcflib.Vector.(apply_q q (copy v_at)) in
-    let v_up_required = Atcflib.Vector.(normalize (cross_product3 (cross_product3 v_g v_at_q) v_at_q)) in
-    let v_axis = Atcflib.Vector.(cross_product3 v_up_q v_up_required) in
+    let v_up_required = Atcflib.Vector.(normalize (assign_cross_product3 (assign_cross_product3 v_g v_at_q (copy v_at)
+                                                     ) v_at_q (copy v_at)
+                                          )) in
+    let v_axis = Atcflib.Vector.(assign_cross_product3 v_up_q v_up_required (copy v_at)) in
     let s = (-1.) *. (Atcflib.Vector.modulus v_axis) *. scale in
     let c = sqrt (1. -. (s*.s)) in (* why not -? *)
     ignore (Atcflib.Vector.normalize v_axis);
@@ -577,11 +579,14 @@ let xml_additions tile =
 (*let _ = Mesh.test_mesh ()*)
 
 let (map, tile) =
-  let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in
+  (*let map = File.create "/Users/gavinprivate/Git/brew/map/2017-07-03_england_cambridgeshire.mbtiles" in*)
+  let map = File.create "/home/gavin/Git/mbtiles_viewer/trails.mbtiles" in
   File.read_all_tiles map;
-  let t = Option.get (File.get_tile_opt map  14 (2+2*2*2049) (2+2*2*2746)) in (* 14 8198 10986 is the station *)
-  let t = Option.get (File.get_tile_opt map  14 8197 10987) in  (* 14 8197 10987 is the center of town *)
-  let t = Option.get (File.get_tile_opt map  13 (8197/2) (10987/2)) in  (* 14 8197 10987 is the center of town *)
+  File.display map;
+    let t = Option.get (File.get_tile_opt map  9 (93) (334)) in
+(*  let t = Option.get (File.get_tile_opt map  14 (2+2*2*2049) (2+2*2*2746)) in *) (* 14 8198 10986 is the station *)
+(*  let t = Option.get (File.get_tile_opt map  14 8197 10987) in  *)(* 14 8197 10987 is the center of town *)
+(*  let t = Option.get (File.get_tile_opt map  13 (8197/2) (10987/2)) in  *)(* 14 8197 10987 is the center of town *)
   let pbf = File.get_tile_pbf map t in
   let tile = Tile.create () in
   Tile.parse_pbf tile pbf;
